@@ -1,0 +1,212 @@
+---
+title: "Recalculate IMD"
+author: "Reka Solymosi"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# load libraries
+library(readxl) # for importing data from excel formats
+library(janitor) # to tidy column names
+library(dplyr) # for data wrangling
+library(sf) # for spatial data manipulation
+library(ggplot2) # for visualisations
+library(spdep) # for the spatial modelling
+library(spatialreg) # also for the spatial modelling
+library(sjPlot) # for printing regression results
+
+```
+
+
+## Preparing the data
+
+
+For this demo we will need data about an outcome - in this example Antisocial Behaviour - at Local Super Output Area (LSOA) level. We can get this from the data.police.uk website. Here we have one year's worth of data from March 2022 to March 2023 for Cleveland police. 
+
+
+```{r}
+# read in monthly ASB counts from Cleveland Police from March 2022 to March 2023 
+# downloaded from data.police.uk
+nm <- list.files(path="data/police_uk_data")
+open_data <- do.call(rbind, lapply(paste0("data/police_uk_data/",nm), function(x) read.csv(file=x)))
+# filter only ASB
+asb_data <- open_data %>% dplyr::filter(Crime.type == "Anti-social behaviour") %>% clean_names()
+# remove rest of crime data
+rm(open_data)
+
+```
+
+
+We will also need the Index of Multiple Deprivation 2019 data. We will download "File 5" which contains the scores for the IMD and the individual domains - this is so we can reproduce the score with the transformed scores, and the supplementary "File 9" which contains the transformed domain scores, which are used to calculate the overall deprivation score, and what we will use to re-calculate this overall score without the crime indicator. 
+
+```{r}
+
+# read in 2019 Index of Multiple Deprivation (IMD) data
+# available to download from gov.uk
+imd_data <- read_excel("data/imd_data/File_5_-_IoD2019_Scores.xlsx", 
+                       sheet = "IoD2019 Scores") %>% clean_names()
+# also import "file 9" which contains the transformed domain scores
+transformed_imd <- read_excel("data/imd_data/File_9_-_IoD2019_Transformed_Scores.xlsx", 
+                              sheet = "IoD2019 Transformed Scores") %>% 
+  clean_names()
+
+
+```
+
+
+Finally we need a geography with LSOAs for Cleveland area.  Here we use the 2011 Census boundaries file available from the ONS Geography portal. We first download all LSOAs for England and Wales, and then use the police force area boundary from the data.police.uk website in order to select only those areas that fall within the Cleveland police jurisdiction. 
+
+Although 2021 Census boundaries are available, the 2019 IMD was created using the 2011 boundaries therefore for analysis using the IMD2019 we must use these geographies. 
+
+
+```{r}
+# read in all LSOA for England and Wales (downloaded from ONS geography portal)
+lsoa_boundaries <- st_read("data/LSOA_2011_Boundaries_Super_Generalised_Clipped_BSC_EW_V4_-6793269404754981576.geojson")
+
+# We can get force boundaries from the data.police.uk site 
+cleveland_force_boundary <- st_read("data/cleveland.kml")
+
+# Let's make sure they are the same projection (British National Grid)
+cleveland_force_boundary <- st_transform(cleveland_force_boundary, 27700)
+# st_crs(cleveland_force_boundary) == st_crs(lsoa_boundaries)
+
+# add small buffer around the PFA, since the boundary is not generalised whereas the LSOAs are
+cleveland_force_boundary <- st_buffer(cleveland_force_boundary, 300)
+
+# intersection - identify all LSOAs contained in PFA
+cleveland_lsoa_contains <- st_contains(cleveland_force_boundary, lsoa_boundaries)
+# subsetting - select only these LSOAs
+cleveland_lsoa_contains <- lsoa_boundaries[unlist(cleveland_lsoa_contains),]
+
+```
+
+
+Great, now we have all our data we can join these together. To join the IMD data sets we can simply use the matching LSOA code columns
+
+
+```{r}
+
+# join the imd file with the overall IMD score
+cleveland_w_imd <- left_join(cleveland_lsoa_contains, imd_data %>% 
+                               select(lsoa_code_2011, lsoa_name_2011, local_authority_district_code_2019, 
+                                      local_authority_district_name_2019, index_of_multiple_deprivation_imd_score), 
+                             by = c("LSOA11CD" = "lsoa_code_2011"))
+# then join the imd file with the transformed scores
+cleveland_w_imd <- left_join(cleveland_w_imd, transformed_imd %>% 
+                               select(-c(lsoa_name_2011, local_authority_district_code_2019, 
+                                      local_authority_district_name_2019)), by = c("LSOA11CD" = "lsoa_code_2011"))
+
+```
+
+Finally count number of ASB incidents per LSOA and join this as well. 
+
+
+```{r}
+# count number of ASB incidents per LSOA
+asb_by_lsoa <- asb_data %>% 
+  group_by(lsoa_code) %>% 
+  summarise(count_of_asb = n())
+
+# join to existing dataframe
+cleveland_w_imd <- left_join(cleveland_w_imd, asb_by_lsoa, by = c("LSOA11CD" = "lsoa_code"))
+
+```
+
+
+
+## Calculating the IMD score 
+
+Now that we have all our variables in one dataset, we can calculate the IMD score from its individual component. Let's start by demonstrating the proof of concept, still including the crime indicator. So in this case, we want to create a weighted sum of the transformed scores of the indicators, in order to re-create the IMD score, following the instructions in the technical documentation for the IMD. 
+
+The total IMD score is made up of the 7 key indicators plus weighting:
+
+- Income Score - exponentially transformed	- 22.5%
+- Employment Score - exponentially transformed	- 22.5%	
+- Education, Skills and Training Score - exponentially transformed	- 13.5%	
+- Health Deprivation and Disability Score - exponentially transformed		- 13.5%
+- Crime Score - exponentially transformed		- 9.3%
+- Barriers to Housing and Services Score - exponentially transformed	- 9.3%
+- Living Environment Score - exponentially transformed - 9.3%
+
+Let's use the exponentially tranformed scores (released in table 9) to recreate the IMD Score (available from table 5):
+
+
+```{r}
+cleveland_w_imd$manual_imd <- cleveland_w_imd$income_score_exponentially_transformed* 0.225+
+  cleveland_w_imd$employment_score_exponentially_transformed*0.225+ 
+  cleveland_w_imd$education_score_exponentially_transformed*0.135 + 
+  cleveland_w_imd$health_score_exponentially_transformed*0.135 + 
+  cleveland_w_imd$crime_score_exponentially_transformed*0.093 +
+  cleveland_w_imd$barriers_score_exponentially_transformed* 0.093 +
+  cleveland_w_imd$living_environment_score_exponentially_transformed*0.093
+
+```
+
+We can now check whether this manually calculated IMD matches with the IMD score presented in table 5. First, we will notice that in table 5 these scores are rounded to 3 decimal places, so we do that first. Then we can compare the two vectors: 
+
+
+```{r}
+
+cleveland_w_imd$manual_imd <- round(cleveland_w_imd$manual_imd, 3)
+identical(cleveland_w_imd$manual_imd, cleveland_w_imd$index_of_multiple_deprivation_imd_score)
+
+```
+
+**NOTE:** So in `r cleveland_w_imd %>% filter(index_of_multiple_deprivation_imd_score != manual_imd) %>% nrow()` cases, the match is not identical. It appears to be an issue of rounding, because they are always off by 0.001. I have emailed the relevant team to ask about why this is happening as I couldn't find anything about rounding in the technical documentation of the IMD. 
+
+If we wish to recalculate the IMD without the crime indicator, we simply remove this, and adjust the weights of the other indicators, so they add up to 1. There is detail on this in *Appendix B* of the IMD Research report (Ministry of Housing, Communities and Local Government, 2019b). To do this we simply re-weight the other 6 domain weights in the same ratio to ensure that the total weight is still 1.00 (i.e. divide them all by 1-0.093). Thus the 22.5% weight increases to 24.81%, the 13.5% to to 14.88% and the 9.3% to 10.25%.
+
+```{r}
+
+# Make the IMD without the crime indicator
+# Same weights but to sum up to 1 need to divide by 1-0.093
+
+cleveland_w_imd$no_crime_imd <- (cleveland_w_imd$income_score_exponentially_transformed* 0.225+
+  cleveland_w_imd$employment_score_exponentially_transformed*0.225+ 
+  cleveland_w_imd$education_score_exponentially_transformed*0.135 + 
+  cleveland_w_imd$health_score_exponentially_transformed*0.135 + 
+  cleveland_w_imd$barriers_score_exponentially_transformed* 0.093 +
+  cleveland_w_imd$living_environment_score_exponentially_transformed*0.093)/(1-0.093)
+
+```
+
+
+## Brief example illustrating the recalculated IMD 
+
+
+Let's focus on our example research question now. Is there an association between area-level deprivation and number of ASB incidents in Cleveland. If we use our re-calculated IMD score, we can avoid the issues mentioned above. 
+
+Let's use here a simple spatial error model, which accounts here for the possible spatial autocorrelation in our data. 
+
+```{r}
+
+# Calculate the weights
+#We coerce the sf object into a new sp object
+cleveland_sp <- as(cleveland_w_imd, "Spatial")
+# queen contiguity neighbours list
+nb_queen <- poly2nb(cleveland_sp, row.names=cleveland_sp$OBJECTID)
+# create row standardised weights matrix
+wm_queen_rs <- nb2mat(nb_queen, style='W')
+# create a list of weights for neighbouringness (using row standardised weights)
+lw_queen <-  nb2listw(nb_queen, style='W')
+# spatial error model
+error_mod <- errorsarlm(count_of_asb ~ no_crime_imd, data=cleveland_sp, lw_queen)
+summary(error_mod)
+
+```
+
+How would the results differ if we hadn't recalculated the IMD without crime, but instead just used the aggregate IMD score? 
+
+```{r}
+
+# spatial error model
+error_mod_all_imd <- errorsarlm(count_of_asb ~ index_of_multiple_deprivation_imd_score, data=cleveland_sp, lw_queen)
+summary(error_mod_all_imd)
+
+```
+
+Overall our conclusions don't change dramatically. We can see that the models are slightly better (lower AIC) for the composite IMD, as crime is included to explain crime, and the coefficient is slightly larger. So for each score increase in IMD score, there are 1.39 modre ASB incidents in the LSOA, compared with 1.34 more if we look at the IMD without the crime indicator as a predictor. This is in line with what we would expect, as including the thing itself in the model will make the correlation stronger artificially. But it does not seem to make big differences to the conclusions we would draw from these data - that is that there is a positive association between deprivation score and ASB. 
+
