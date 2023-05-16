@@ -24,7 +24,7 @@ library(sjPlot) # for printing regression results
 ## Preparing the data
 
 
-For this demo we will need data about an outcome - in this example Antisocial Behaviour - at Local Super Output Area (LSOA) level. We can get this from the data.police.uk website. Here we have one year's worth of data from March 2022 to March 2023 for Cleveland police. 
+For this demo we will need data about an outcome - in this example Burglary - at Local Super Output Area (LSOA) level. We can get this from the data.police.uk website. Here we have one year's worth of data from March 2022 to March 2023 for Cleveland police. 
 
 
 ```{r}
@@ -34,6 +34,12 @@ nm <- list.files(path="data/police_uk_data")
 open_data <- do.call(rbind, lapply(paste0("data/police_uk_data/",nm), function(x) read.csv(file=x)))
 # filter only ASB
 asb_data <- open_data %>% dplyr::filter(Crime.type == "Anti-social behaviour") %>% clean_names()
+# filter only Burglary
+burglary_data <- open_data %>% dplyr::filter(Crime.type == "Burglary") %>% clean_names()
+
+# filter only Violence and sexual offences
+violence_data <- open_data %>% dplyr::filter(Crime.type == "Violence and sexual offences") %>% clean_names()
+
 # remove rest of crime data
 rm(open_data)
 
@@ -116,6 +122,36 @@ cleveland_w_imd <- left_join(cleveland_w_imd, asb_by_lsoa, by = c("LSOA11CD" = "
 ```
 
 
+Or if we want to look at burglary then the number of burglary incidents per LSOA and join this as well. 
+
+
+```{r}
+# count number of burglary incidents per LSOA
+burg_by_lsoa <- burglary_data %>% 
+  group_by(lsoa_code) %>% 
+  summarise(count_of_burglary = n())
+
+# join to existing dataframe
+cleveland_w_imd <- left_join(cleveland_w_imd, burg_by_lsoa, by = c("LSOA11CD" = "lsoa_code"))
+
+```
+
+
+Or if we want to look at burglary then the number of Violence and sexual offences incidents per LSOA and join this as well. 
+
+
+```{r}
+# count number of burglary incidents per LSOA
+violence_by_lsoa <- violence_data %>% 
+  group_by(lsoa_code) %>% 
+  summarise(count_of_violence = n())
+
+# join to existing dataframe
+cleveland_w_imd <- left_join(cleveland_w_imd, violence_by_lsoa, by = c("LSOA11CD" = "lsoa_code"))
+
+```
+
+
 
 ## Calculating the IMD score 
 
@@ -192,8 +228,12 @@ nb_queen <- poly2nb(cleveland_sp, row.names=cleveland_sp$OBJECTID)
 wm_queen_rs <- nb2mat(nb_queen, style='W')
 # create a list of weights for neighbouringness (using row standardised weights)
 lw_queen <-  nb2listw(nb_queen, style='W')
-# spatial error model
-error_mod <- errorsarlm(count_of_asb ~ no_crime_imd, data=cleveland_sp, lw_queen)
+# # spatial error model
+# error_mod <- errorsarlm(count_of_asb ~ no_crime_imd, data=cleveland_sp, lw_queen)
+# summary(error_mod)
+
+# spatial error model for burglary
+error_mod <- errorsarlm(count_of_burglary ~ no_crime_imd, data=cleveland_sp, lw_queen)
 summary(error_mod)
 
 ```
@@ -202,11 +242,36 @@ How would the results differ if we hadn't recalculated the IMD without crime, bu
 
 ```{r}
 
-# spatial error model
-error_mod_all_imd <- errorsarlm(count_of_asb ~ index_of_multiple_deprivation_imd_score, data=cleveland_sp, lw_queen)
+# # spatial error model
+# error_mod_all_imd <- errorsarlm(count_of_asb ~ index_of_multiple_deprivation_imd_score, data=cleveland_sp, lw_queen)
+# summary(error_mod_all_imd)
+
+# spatial error model for burglary
+error_mod_all_imd <- errorsarlm(count_of_burglary ~ index_of_multiple_deprivation_imd_score, data=cleveland_sp, lw_queen)
 summary(error_mod_all_imd)
 
 ```
 
-Overall our conclusions don't change dramatically. We can see that the models are slightly better (lower AIC) for the composite IMD, as crime is included to explain crime, and the coefficient is slightly larger. So for each score increase in IMD score, there are 1.39 modre ASB incidents in the LSOA, compared with 1.34 more if we look at the IMD without the crime indicator as a predictor. This is in line with what we would expect, as including the thing itself in the model will make the correlation stronger artificially. But it does not seem to make big differences to the conclusions we would draw from these data - that is that there is a positive association between deprivation score and ASB. 
+Our conclusions don’t change dramatically when deploying the revised measure. However, we observe the model is slightly worse (larger AIC) when deploying the revised IMD measure and the coefficient for the effect of IMD on ASB is slightly smaller. So for each increase in IMD score, there are 0.31 more burglary incidents in the LSOA, compared with 0.29 more if we look at the IMD without the crime indicator as a predictor. This is in line with what we would expect, as including the thing itself in the model will make the correlation stronger artificially. But it does not seem to make big differences to the conclusions we would draw from these data - that is that there is a positive association between deprivation score and burglary.
+
+
+## Violence
+
+
+```{r}
+# spatial error model for burglary
+error_mod <- errorsarlm(count_of_violence ~ no_crime_imd, data=cleveland_sp, lw_queen)
+summary(error_mod)
+
+```
+
+
+and for the whole IMD:
+
+```{r}
+# spatial error model for burglary
+error_mod_all_imd <- errorsarlm(count_of_violence ~ index_of_multiple_deprivation_imd_score, data=cleveland_sp, lw_queen)
+summary(error_mod_all_imd)
+
+```
 
