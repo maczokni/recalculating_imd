@@ -27,7 +27,7 @@ If you find any inconsistencies or have suggestions, please open an issue or sub
 
 ## Acknowledgements
 
-A thank you to the British Society of Criminology for providing a platform to share this work. 
+A thank you to Stephen Clark and Jose Pina Sanchez for comments and the British Society of Criminology for providing a platform to share this work. 
 
 ## License
 
