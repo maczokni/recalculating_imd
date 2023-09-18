@@ -26,8 +26,7 @@ The data used in this analysis is sourced from [UK Police Data](https://data.pol
 If you find any inconsistencies or have suggestions, please open an issue or submit a pull request.
 
 ## Acknowledgements
-
-A thank you to Stephen Clark and Jose Pina Sanchez for comments and the British Society of Criminology for providing a platform to share this work. 
+A special thanks to Stephen Clark (University of Leeds) who introduced and advised Lightowlers on this as a possible approach to pursuing the analysis in Lightowlers et al. (2021) and Dr Jose Pina-Sánchez (University of Leeds) for comments on an earlier draft of this blog. and the British Society of Criminology for providing a platform to share this work. 
 
 ## License
 
